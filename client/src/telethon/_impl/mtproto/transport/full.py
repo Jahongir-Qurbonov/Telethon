@@ -1,8 +1,16 @@
 import logging
 import struct
-from zlib import crc32
+import zlib
 
-from .abcs import BadStatusError, MissingBytesError, OutFn, Transport
+from .abcs import (
+    BadCrcError,
+    BadLenError,
+    BadSeqError,
+    BadStatusError,
+    MissingBytesError,
+    Transport,
+    UnpackedOffset,
+)
 
 
 class Full(Transport):
@@ -25,43 +33,51 @@ class Full(Transport):
         self._send_seq = 0
         self._recv_seq = 0
 
-    def pack(self, input: bytes, write: OutFn) -> None:
-        assert len(input) % 4 == 0
+    def pack(self, buffer: bytearray) -> None:
+        length = len(buffer)
+        assert length % 4 == 0
 
-        length = len(input) + 12
-        # Unfortunately there's no hasher that can be updated multiple times,
-        # so a temporary buffer must be used to hash it all in one go.
-        tmp = struct.pack("<ii", length, self._send_seq) + input
-        write(tmp)
-        write(struct.pack("<I", crc32(tmp)))
+        # payload len + length itself (4 bytes) + send counter (4 bytes) + crc32 (4 bytes)
+        total_len = length + 4 + 4 + 4
+
+        buffer[:0] = struct.pack("<i", self._send_seq)
+        buffer[:0] = struct.pack("<i", total_len)
+
+        crc = zlib.crc32(buffer)
+        buffer.extend(struct.pack("<I", crc))
+
         self._send_seq += 1
 
-    def unpack(self, input: bytes | bytearray | memoryview, output: bytearray) -> int:
-        if len(input) < 4:
-            raise MissingBytesError(expected=4, got=len(input))
+    def unpack(self, buffer: bytes | bytearray | memoryview) -> UnpackedOffset:
+        if len(buffer) < 4:
+            raise MissingBytesError()
 
-        length = struct.unpack_from("<i", input)[0]
-        assert isinstance(length, int)
+        total_len = len(buffer)
+        length: int = struct.unpack("<i", buffer[0:4])[0]
         if length < 12:
             if length < 0:
                 raise BadStatusError(status=-length)
-            raise ValueError(f"bad length, expected > 12, got: {length}")
+            raise BadLenError(got=length)
 
-        if len(input) < length:
-            raise MissingBytesError(expected=length, got=len(input))
+        if total_len < length:
+            raise MissingBytesError()
 
-        seq = struct.unpack_from("<i", input, 4)[0]
-        if seq != self._recv_seq:
-            raise ValueError(f"bad seq, expected: {self._recv_seq}, got: {seq}")
+        seq = struct.unpack("<i", buffer[4:8])[0]
+        if seq != self.recv_seq:
+            raise BadSeqError(expected=self.recv_seq, got=seq)
 
-        crc = struct.unpack_from("<I", input, length - 4)[0]
-        valid_crc = crc32(memoryview(input)[: length - 4])
+        # CRC32 check
+        crc = struct.unpack("<I", buffer[length - 4 : length])[0]
+        valid_crc = zlib.crc32(buffer[: length - 4])
         if crc != valid_crc:
-            raise ValueError(f"bad crc, expected: {valid_crc}, got: {crc}")
+            raise BadCrcError(expected=valid_crc, got=crc)
 
-        self._recv_seq += 1
-        output += memoryview(input)[8 : length - 4]
-        return length
+        self.recv_seq += 1
+        return UnpackedOffset(
+            data_start=8,
+            data_end=length - 4,
+            next_offset=length,
+        )
 
     def reset(self):
         logging.info("resetting recv and send seqs in full transport")

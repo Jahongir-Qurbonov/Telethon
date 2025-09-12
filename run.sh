@@ -1,0 +1,5 @@
+export TG_ID=1852755
+export TG_HASH=e721641e3f129d253db45b520506db6f
+
+uv pip install client/
+uv run pytest client/ -s

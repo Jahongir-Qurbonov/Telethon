@@ -292,7 +292,7 @@ Deserialization = (
 # https://core.telegram.org/mtproto/description
 class Mtp(ABC):
     @abstractmethod
-    def push(self, request: bytes) -> Optional[MsgId]:
+    def push(self, buffer: bytearray, request: bytes) -> Optional[MsgId]:
         """
         Push a request's body to the internal buffer.
 
@@ -300,7 +300,7 @@ class Mtp(ABC):
         """
 
     @abstractmethod
-    def finalize(self) -> Optional[tuple[MsgId, bytes]]:
+    def finalize(self, buffer: bytearray) -> Optional[tuple[MsgId, bytes]]:
         """
         Finalize the buffer of serialized requests.
 

@@ -1,7 +1,7 @@
 import logging
 import struct
 
-from .abcs import BadStatusError, MissingBytesError, OutFn, Transport
+from .abcs import BadStatusError, MissingBytesError, Transport, UnpackedOffset
 
 
 class Abridged(Transport):
@@ -23,44 +23,49 @@ class Abridged(Transport):
     def __init__(self) -> None:
         self._init = False
 
-    def pack(self, input: bytes, write: OutFn) -> None:
-        assert len(input) % 4 == 0
+    def pack(self, buffer: bytearray) -> None:
+        assert len(buffer) % 4 == 0
 
-        if not self._init:
-            write(b"\xef")
-            self._init = True
-
-        length = len(input) // 4
+        length = len(buffer) // 4
         if length < 127:
-            write(struct.pack("<b", length))
+            buffer[:0] = bytes([length])
         else:
-            write(struct.pack("<i", 0x7F | (length << 8)))
-        write(input)
+            val = 0x7F | (length << 8)
+            buffer[:4] = struct.pack("<i", val)
 
-    def unpack(self, input: bytes | bytearray | memoryview, output: bytearray) -> int:
-        if not input:
-            raise MissingBytesError(expected=1, got=0)
+        if not self.init:
+            buffer[:0] = bytes([0xEF])
+            self.init = True
 
-        length = input[0]
-        if 1 < length < 127:
+    def unpack(self, buffer: bytes | bytearray | memoryview) -> UnpackedOffset:
+        if not buffer:
+            raise MissingBytesError()
+
+        len_byte = buffer[0]
+        if len_byte < 127:
             header_len = 1
-        elif len(input) < 4:
-            raise MissingBytesError(expected=4, got=len(input))
+            length = len_byte
         else:
+            if len(buffer) < 4:
+                raise MissingBytesError()
             header_len = 4
-            length = struct.unpack_from("<i", input)[0] >> 8
+            # '<i' is little-endian signed int
+            length = struct.unpack("<i", buffer[0:4])[0] >> 8
 
-        if length <= 0:
-            if length < 0:
-                raise BadStatusError(status=-length)
-            raise ValueError(f"bad length, expected > 0, got: {length}")
+        length = length * 4
+        if len(buffer) < header_len + length:
+            raise MissingBytesError()
 
-        length *= 4
-        if len(input) < header_len + length:
-            raise MissingBytesError(expected=header_len + length, got=len(input))
+        if header_len == 1 and length >= 4:
+            data = struct.unpack("<i", buffer[1:5])[0]
+            if data < 0:
+                raise BadStatusError(status=-data)
 
-        output += memoryview(input)[header_len : header_len + length]
-        return header_len + length
+        return UnpackedOffset(
+            data_start=header_len,
+            data_end=header_len + length,
+            next_offset=header_len + length,
+        )
 
     def reset(self):
         logging.info("resetting sending of header in abridged transport")

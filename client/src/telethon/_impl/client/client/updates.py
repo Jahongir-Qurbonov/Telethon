@@ -143,8 +143,18 @@ async def dispatch_next(client: Client) -> None:
     update, chat_map = await client._updates.get()
     for event_cls, handlers in client._handlers.items():
         if event := event_cls._try_from_update(client, update, chat_map):
-            for handler, filter in handlers:
-                if not filter or (await r if isawaitable(r := filter(event)) else r):
-                    ret = await handler(event)
-                    if not (ret is Continue or client._check_all_handlers):
-                        return
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future
+            asyncio.run_coroutine_threadsafe(dispatch_next_event(client, event, handlers))
+
+
+async def dispatch_next_event(
+    client: Client,
+    event: Event,
+    handlers: list[tuple[Callable[[Any], Awaitable[Any]], Optional[FilterType]]],
+) -> None:
+    for handler, filter in handlers:
+        if not filter or (await r if isawaitable(r := filter(event)) else r):
+            ret = await handler(event)
+            if not (ret is Continue or client._check_all_handlers):
+                return
